@@ -1,28 +1,27 @@
-
-```python
-from typing import Any, Dict, Optional
+# app/core/exceptions.py
+from typing import Any, Dict, Optional, Union
 from fastapi import HTTPException as FastAPIHTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class HTTPException(FastAPIHTTPException):
-    """Base HTTP exception with additional context"""
+    """Base HTTP exception with enhanced error details"""
     
     def __init__(
         self,
         status_code: int,
         detail: Any = None,
-        headers: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
         error_code: Optional[str] = None,
     ) -> None:
         super().__init__(status_code=status_code, detail=detail, headers=headers)
-        self.error_code = error_code
+        self.error_code = error_code or f"ERR_{status_code}"
 
 
 class NotFoundException(HTTPException):
@@ -31,15 +30,22 @@ class NotFoundException(HTTPException):
     def __init__(
         self,
         detail: str = "Resource not found",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "NOT_FOUND",
+        resource: Optional[str] = None,
+        resource_id: Optional[Union[str, int]] = None,
     ) -> None:
+        error_detail = detail
+        if resource and resource_id:
+            error_detail = f"{resource} with id '{resource_id}' not found"
+        elif resource:
+            error_detail = f"{resource} not found"
+        
         super().__init__(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=detail,
-            headers=headers,
-            error_code=error_code,
+            detail=error_detail,
+            error_code="NOT_FOUND",
         )
+        self.resource = resource
+        self.resource_id = resource_id
 
 
 class ValidationException(HTTPException):
@@ -47,16 +53,30 @@ class ValidationException(HTTPException):
     
     def __init__(
         self,
-        detail: Any = "Validation error",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "VALIDATION_ERROR",
+        detail: Union[str, Dict[str, Any]] = "Validation error",
+        field: Optional[str] = None,
+        errors: Optional[list] = None,
     ) -> None:
+        if field and isinstance(detail, str):
+            error_detail = {
+                "message": detail,
+                "field": field,
+            }
+        elif errors:
+            error_detail = {
+                "message": "Validation failed",
+                "errors": errors,
+            }
+        else:
+            error_detail = detail
+        
         super().__init__(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
-            headers=headers,
-            error_code=error_code,
+            detail=error_detail,
+            error_code="VALIDATION_ERROR",
         )
+        self.field = field
+        self.errors = errors
 
 
 class UnauthorizedException(HTTPException):
@@ -64,50 +84,48 @@ class UnauthorizedException(HTTPException):
     
     def __init__(
         self,
-        detail: str = "Unauthorized",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "UNAUTHORIZED",
+        detail: str = "Authentication required",
     ) -> None:
         super().__init__(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=detail,
-            headers=headers,
-            error_code=error_code,
+            headers={"WWW-Authenticate": "Bearer"},
+            error_code="UNAUTHORIZED",
         )
 
 
 class ForbiddenException(HTTPException):
-    """Exception raised when access is forbidden"""
+    """Exception raised when user lacks permission"""
     
     def __init__(
         self,
-        detail: str = "Forbidden",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "FORBIDDEN",
+        detail: str = "Insufficient permissions",
     ) -> None:
         super().__init__(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=detail,
-            headers=headers,
-            error_code=error_code,
+            error_code="FORBIDDEN",
         )
 
 
 class ConflictException(HTTPException):
-    """Exception raised when there is a conflict"""
+    """Exception raised when there's a conflict with existing data"""
     
     def __init__(
         self,
         detail: str = "Resource conflict",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "CONFLICT",
+        resource: Optional[str] = None,
     ) -> None:
+        error_detail = detail
+        if resource:
+            error_detail = f"Conflict with existing {resource}"
+        
         super().__init__(
             status_code=status.HTTP_409_CONFLICT,
-            detail=detail,
-            headers=headers,
-            error_code=error_code,
+            detail=error_detail,
+            error_code="CONFLICT",
         )
+        self.resource = resource
 
 
 class BadRequestException(HTTPException):
@@ -116,14 +134,11 @@ class BadRequestException(HTTPException):
     def __init__(
         self,
         detail: str = "Bad request",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "BAD_REQUEST",
     ) -> None:
         super().__init__(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=detail,
-            headers=headers,
-            error_code=error_code,
+            error_code="BAD_REQUEST",
         )
 
 
@@ -133,125 +148,113 @@ class InternalServerException(HTTPException):
     def __init__(
         self,
         detail: str = "Internal server error",
-        headers: Optional[Dict[str, Any]] = None,
-        error_code: str = "INTERNAL_SERVER_ERROR",
     ) -> None:
         super().__init__(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=detail,
-            headers=headers,
-            error_code=error_code,
+            error_code="INTERNAL_SERVER_ERROR",
         )
 
 
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Handle custom HTTP exceptions"""
-    error_response = {
+def format_error_response(
+    status_code: int,
+    detail: Any,
+    error_code: Optional[str] = None,
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Format error response in a consistent structure"""
+    response = {
         "error": {
-            "code": getattr(exc, "error_code", "HTTP_ERROR"),
-            "message": exc.detail,
-            "status_code": exc.status_code,
+            "code": error_code or f"ERR_{status_code}",
+            "message": detail if isinstance(detail, str) else str(detail),
+            "status_code": status_code,
         }
     }
+    
+    if isinstance(detail, dict):
+        response["error"].update(detail)
+        if "message" not in response["error"]:
+            response["error"]["message"] = "An error occurred"
+    
+    if path:
+        response["error"]["path"] = path
+    
+    return response
+
+
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Global handler for HTTPException"""
+    error_code = getattr(exc, "error_code", None)
     
     logger.warning(
         f"HTTP exception: {exc.status_code} - {exc.detail}",
         extra={
             "path": request.url.path,
             "method": request.method,
-            "status_code": exc.status_code,
+            "error_code": error_code,
         }
     )
     
     return JSONResponse(
         status_code=exc.status_code,
-        content=error_response,
+        content=format_error_response(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            error_code=error_code,
+            path=request.url.path,
+        ),
         headers=exc.headers,
     )
 
 
 async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
+    request: Request, exc: Union[RequestValidationError, ValidationError]
 ) -> JSONResponse:
-    """Handle request validation errors"""
+    """Global handler for validation errors"""
     errors = []
-    for error in exc.errors():
-        errors.append({
-            "field": ".".join(str(loc) for loc in error["loc"]),
-            "message": error["msg"],
-            "type": error["type"],
-        })
     
-    error_response = {
-        "error": {
-            "code": "VALIDATION_ERROR",
-            "message": "Request validation failed",
-            "status_code": status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "details": errors,
-        }
-    }
+    if isinstance(exc, RequestValidationError):
+        for error in exc.errors():
+            errors.append({
+                "field": ".".join(str(loc) for loc in error["loc"]),
+                "message": error["msg"],
+                "type": error["type"],
+            })
+    else:
+        for error in exc.errors():
+            errors.append({
+                "field": ".".join(str(loc) for loc in error["loc"]),
+                "message": error["msg"],
+                "type": error["type"],
+            })
     
     logger.warning(
-        f"Validation error: {errors}",
+        f"Validation error: {len(errors)} error(s)",
         extra={
             "path": request.url.path,
             "method": request.method,
+            "errors": errors,
         }
     )
     
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=error_response,
-    )
-
-
-async def pydantic_validation_exception_handler(
-    request: Request, exc: ValidationError
-) -> JSONResponse:
-    """Handle Pydantic validation errors"""
-    errors = []
-    for error in exc.errors():
-        errors.append({
-            "field": ".".join(str(loc) for loc in error["loc"]),
-            "message": error["msg"],
-            "type": error["type"],
-        })
-    
-    error_response = {
-        "error": {
-            "code": "VALIDATION_ERROR",
-            "message": "Data validation failed",
-            "status_code": status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "details": errors,
-        }
-    }
-    
-    logger.warning(
-        f"Pydantic validation error: {errors}",
-        extra={
-            "path": request.url.path,
-            "method": request.method,
-        }
-    )
-    
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=error_response,
+        content=format_error_response(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Validation failed",
+                "errors": errors,
+            },
+            error_code="VALIDATION_ERROR",
+            path=request.url.path,
+        ),
     )
 
 
 async def sqlalchemy_exception_handler(
     request: Request, exc: SQLAlchemyError
 ) -> JSONResponse:
-    """Handle SQLAlchemy database errors"""
-    error_response = {
-        "error": {
-            "code": "DATABASE_ERROR",
-            "message": "A database error occurred",
-            "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
-        }
-    }
-    
+    """Global handler for SQLAlchemy database errors"""
     logger.error(
         f"Database error: {str(exc)}",
         extra={
@@ -261,84 +264,62 @@ async def sqlalchemy_exception_handler(
         exc_info=True,
     )
     
+    if isinstance(exc, IntegrityError):
+        detail = "Database integrity constraint violated"
+        if "unique" in str(exc).lower():
+            detail = "Resource already exists"
+        elif "foreign key" in str(exc).lower():
+            detail = "Referenced resource does not exist"
+        
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=format_error_response(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
+                error_code="DATABASE_CONFLICT",
+                path=request.url.path,
+            ),
+        )
+    
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=error_response,
-    )
-
-
-async def integrity_exception_handler(
-    request: Request, exc: IntegrityError
-) -> JSONResponse:
-    """Handle database integrity constraint violations"""
-    error_message = "Database integrity constraint violated"
-    
-    if "unique constraint" in str(exc.orig).lower():
-        error_message = "Resource already exists"
-        status_code = status.HTTP_409_CONFLICT
-        error_code = "DUPLICATE_RESOURCE"
-    elif "foreign key constraint" in str(exc.orig).lower():
-        error_message = "Referenced resource does not exist"
-        status_code = status.HTTP_400_BAD_REQUEST
-        error_code = "INVALID_REFERENCE"
-    else:
-        status_code = status.HTTP_400_BAD_REQUEST
-        error_code = "INTEGRITY_ERROR"
-    
-    error_response = {
-        "error": {
-            "code": error_code,
-            "message": error_message,
-            "status_code": status_code,
-        }
-    }
-    
-    logger.warning(
-        f"Integrity error: {str(exc)}",
-        extra={
-            "path": request.url.path,
-            "method": request.method,
-        }
-    )
-    
-    return JSONResponse(
-        status_code=status_code,
-        content=error_response,
+        content=format_error_response(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error occurred",
+            error_code="DATABASE_ERROR",
+            path=request.url.path,
+        ),
     )
 
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle all unhandled exceptions"""
-    error_response = {
-        "error": {
-            "code": "INTERNAL_SERVER_ERROR",
-            "message": "An unexpected error occurred",
-            "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
-        }
-    }
-    
+    """Global handler for unhandled exceptions"""
     logger.error(
         f"Unhandled exception: {str(exc)}",
         extra={
             "path": request.url.path,
             "method": request.method,
+            "exception_type": type(exc).__name__,
         },
         exc_info=True,
     )
     
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=error_response,
+        content=format_error_response(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred",
+            error_code="INTERNAL_SERVER_ERROR",
+            path=request.url.path,
+        ),
     )
 
 
 def register_exception_handlers(app) -> None:
     """Register all exception handlers with the FastAPI app"""
     app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(FastAPIHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
-    app.add_exception_handler(ValidationError, pydantic_validation_exception_handler)
-    app.add_exception_handler(IntegrityError, integrity_exception_handler)
+    app.add_exception_handler(ValidationError, validation_exception_handler)
     app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
-```
-```

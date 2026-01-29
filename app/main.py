@@ -1,57 +1,48 @@
-
-```python
-import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.api.v1.router import api_router
 from app.core.config import settings
-from app.db.session import engine
-from app.db.base import Base
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from app.core.database import engine, Base
+from app.api.v1 import auth, users, items
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator:
-    logger.info("Starting up application...")
-    
+async def lifespan(app: FastAPI):
+    # Startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
-    logger.info("Database tables created successfully")
-    
     yield
-    
-    logger.info("Shutting down application...")
+    # Shutdown
     await engine.dispose()
-    logger.info("Database connections closed")
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    description=settings.DESCRIPTION,
     lifespan=lifespan,
 )
 
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(api_router, prefix=settings.API_V1_STR)
+# Include routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(items.router, prefix="/api/v1/items", tags=["items"])
+
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the API", "version": settings.VERSION}
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-```
-```
