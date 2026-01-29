@@ -104,7 +104,6 @@ logs/
 *.sqlite
 *.sqlite3
 db.sqlite3
-data/
 postgres_data/
 mysql_data/
 
@@ -124,7 +123,8 @@ yarn-error.log*
 # OS files
 Thumbs.db
 .DS_Store
-desktop.ini
+.Spotlight-V100
+.Trashes
 
 # Alembic (if using migrations)
 alembic.ini

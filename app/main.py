@@ -23,7 +23,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -32,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(items.router, prefix="/api/v1/items", tags=["items"])
@@ -40,7 +38,11 @@ app.include_router(items.router, prefix="/api/v1/items", tags=["items"])
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the API", "version": settings.VERSION}
+    return {
+        "message": "Welcome to the API",
+        "version": settings.VERSION,
+        "docs": "/docs",
+    }
 
 
 @app.get("/health")

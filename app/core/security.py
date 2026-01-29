@@ -12,6 +12,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -41,7 +42,10 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(
+    data: Dict[str, Any],
+    expires_delta: Optional[timedelta] = None
+) -> str:
     """
     Create a JWT access token.
     
@@ -61,25 +65,58 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow()
+        "iat": datetime.utcnow(),
+        "type": "access"
     })
     
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-def verify_token(token: str) -> Dict[str, Any]:
+def create_refresh_token(
+    data: Dict[str, Any],
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """
+    Create a JWT refresh token.
+    
+    Args:
+        data: Dictionary containing the claims to encode in the token
+        expires_delta: Optional custom expiration time
+        
+    Returns:
+        str: Encoded JWT refresh token
+    """
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.utcnow(),
+        "type": "refresh"
+    })
+    
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def verify_token(token: str, token_type: str = "access") -> Dict[str, Any]:
     """
     Verify and decode a JWT token.
     
     Args:
         token: The JWT token to verify
+        token_type: Expected token type ("access" or "refresh")
         
     Returns:
-        Dict[str, Any]: The decoded token payload
+        Dict[str, Any]: Decoded token payload
         
     Raises:
-        HTTPException: If token is invalid or expired
+        HTTPException: If token is invalid, expired, or wrong type
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -90,11 +127,19 @@ def verify_token(token: str) -> Dict[str, Any]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         
-        # Check if token has expired
+        # Verify token type
+        if payload.get("type") != token_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token type. Expected {token_type}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Check expiration
         exp = payload.get("exp")
         if exp is None:
             raise credentials_exception
-            
+        
         if datetime.utcnow() > datetime.fromtimestamp(exp):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -116,63 +161,61 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
         token: The JWT token to decode
         
     Returns:
-        Optional[Dict[str, Any]]: The decoded token payload or None if invalid
+        Optional[Dict[str, Any]]: Decoded token payload or None if invalid
     """
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"verify_signature": False}
+        )
         return payload
     except JWTError:
         return None
 
 
-def create_refresh_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def verify_access_token(token: str) -> Dict[str, Any]:
     """
-    Create a JWT refresh token with longer expiration.
+    Verify an access token specifically.
     
     Args:
-        data: Dictionary containing the claims to encode in the token
-        expires_delta: Optional custom expiration time
+        token: The JWT access token to verify
         
     Returns:
-        str: Encoded JWT refresh token
+        Dict[str, Any]: Decoded token payload
     """
-    to_encode = data.copy()
-    
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(days=7)
-    
-    to_encode.update({
-        "exp": expire,
-        "iat": datetime.utcnow(),
-        "type": "refresh"
-    })
-    
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return verify_token(token, token_type="access")
 
 
 def verify_refresh_token(token: str) -> Dict[str, Any]:
     """
-    Verify a refresh token.
+    Verify a refresh token specifically.
     
     Args:
-        token: The refresh token to verify
+        token: The JWT refresh token to verify
         
     Returns:
-        Dict[str, Any]: The decoded token payload
-        
-    Raises:
-        HTTPException: If token is invalid, expired, or not a refresh token
+        Dict[str, Any]: Decoded token payload
     """
-    payload = verify_token(token)
+    return verify_token(token, token_type="refresh")
+
+
+def create_token_pair(data: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Create both access and refresh tokens.
     
-    if payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token type",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    Args:
+        data: Dictionary containing the claims to encode in the tokens
+        
+    Returns:
+        Dict[str, str]: Dictionary with access_token and refresh_token
+    """
+    access_token = create_access_token(data)
+    refresh_token = create_refresh_token(data)
     
-    return payload
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
